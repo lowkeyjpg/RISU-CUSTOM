@@ -1136,6 +1136,6 @@
 
 {#if recallOpen && currentCharacter?.chats[currentCharacter.chatPage]}
     {#key currentCharacter.chats[currentCharacter.chatPage].id}
-        <SceneRecall chat={currentCharacter.chats[currentCharacter.chatPage]} close={() => recallOpen = false} jump={scrollToMessage} />
+        <SceneRecall siblings={currentCharacter.chats} chat={currentCharacter.chats[currentCharacter.chatPage]} close={() => recallOpen = false} jump={scrollToMessage} />
     {/key}
 {/if}

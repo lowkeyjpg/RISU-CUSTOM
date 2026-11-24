@@ -34,7 +34,8 @@ import { getModuleAssets, getModuleToggles } from "./modules";
 import { readImage } from "../globalApi.svelte";
 import { pluginV2 } from "../plugins/plugins.svelte";
 
-import { recallForRequest, scenePrompt, selectedScene, type SceneSource } from "./memory/sceneRecall";
+import { getColdStorageItem } from "./coldstorage.svelte";
+import { readSceneRooms, linkedRooms, recallForRequest, scenePrompt, selectedScene, type SceneSource } from "./memory/sceneRecall";
 
 export interface OpenAIChat{
     role: 'system'|'user'|'assistant'|'function'
@@ -1526,7 +1527,9 @@ export async function sendChat(chatProcessIndex = -1,arg:{
 
     // Resolve against the final template/Hypa history to avoid repeating a retained scene.
     const sceneSources: SceneSource[] = []
-    const candidates = recallForRequest(currentChat, formated)
+    const recallRooms = currentChat.sceneRecallParent && (currentChat.sceneRecallAuto !== false || currentChat.sceneRecallPin)
+        ? await readSceneRooms(linkedRooms(currentChat, nowChatroom.chats), getColdStorageItem) : [currentChat]
+    const candidates = recallForRequest(currentChat, formated, recallRooms)
     if (candidates.length) {
         const room = Math.max(0, maxContextTokens - DBState.db.maxResponse)
         const cap = Math.min(512, Math.floor(room / 6))
@@ -1564,7 +1567,7 @@ export async function sendChat(chatProcessIndex = -1,arg:{
             if (promptInfo.promptText) promptInfo.promptText = safeStructuredClone(formated)
         } else {
             sceneSources.length = 0
-            if (selectedScene(currentChat)) {
+            if (selectedScene(currentChat, recallRooms)) {
                 throwError('고정한 장면을 넣을 문맥 공간이 부족합니다. 장면 기억에서 고정을 해제하거나 문맥 길이를 늘려 주세요.')
                 return false
             }

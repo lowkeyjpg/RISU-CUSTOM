@@ -25,5 +25,5 @@ fi
 (cd "$out/dex" && zip -q "$out/app.apk" classes.dex)
 "$BUILD_TOOLS/zipalign" -f 4 "$out/app.apk" "$out/aligned.apk"
 mkdir -p build
-"$BUILD_TOOLS/apksigner" sign --ks "$SIGNING_KEYSTORE" --ks-pass "file:$SIGNING_PASSWORD_FILE" --out build/RISU-CUSTOM-DEV-v0.2.apk "$out/aligned.apk"
-"$BUILD_TOOLS/apksigner" verify --verbose build/RISU-CUSTOM-DEV-v0.2.apk
+"$BUILD_TOOLS/apksigner" sign --ks "$SIGNING_KEYSTORE" --ks-pass "file:$SIGNING_PASSWORD_FILE" --out build/RISU-CUSTOM-DEV-v0.3.apk "$out/aligned.apk"
+"$BUILD_TOOLS/apksigner" verify --verbose build/RISU-CUSTOM-DEV-v0.3.apk

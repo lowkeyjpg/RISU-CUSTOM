@@ -4,6 +4,8 @@ import type { OpenAIChat } from '../index.svelte'
 export interface SceneSource {
     id: string
     turn: number
+    roomId?: string
+    roomName?: string
     excerpt: string
 }
 export interface SceneHit extends SceneSource {
@@ -74,37 +76,95 @@ export function searchScenes(messages: Message[], query: string, end = messages.
     return hits.sort((a, b) => b.score - a.score || b.turn - a.turn).slice(0, limit)
 }
 
-export function selectedScene(chat: Chat): SceneSource | undefined {
-    const pin = chat.sceneRecallPin
-    if (!pin) return
-    const i = chat.message.findIndex(m => m.chatId === pin.id)
-    const cutoff = chat.message.findLastIndex(m => m.disabled === 'allBefore')
-    if (i < 0 || !available(chat.message, i, cutoff)) return
-    const body = sceneBody(chat.message[i].data)
-    // After an edit, never quote the obsolete saved excerpt.
-    if (body.includes(pin.excerpt) && pin.excerpt) return { ...pin, turn: i + 1 }
-    const excerpt = body.slice(0, 420).trim()
-    if (excerpt) return { id: pin.id, turn: i + 1, excerpt }
+// Links are scoped to one character. Follow only the explicitly chosen ancestry.
+export function linkedRooms(chat: Chat, siblings: Chat[]): Chat[] {
+    const byId = new Map(siblings.filter(room => room.id).map(room => [room.id, room]))
+    const rooms = [chat]
+    const seen = new Set([chat.id])
+    let parent = chat.sceneRecallParent
+    while (parent && !seen.has(parent)) {
+        const room = byId.get(parent)
+        if (!room) break
+        rooms.push(room)
+        seen.add(parent)
+        parent = room.sceneRecallParent
+    }
+    return rooms
 }
 
-export function recallForRequest(chat: Chat, prompt: OpenAIChat[]): SceneSource[] {
-    const pin = selectedScene(chat)
+const coldHeader = '\uEF01COLDSTORAGE\uEF01'
+export function isArchivedRoom(room: Chat) {
+    return room.message[0]?.data?.startsWith(coldHeader)
+}
+
+// Read archived rooms without changing the stored pointer or restoring their Hypa data.
+export async function readSceneRooms(rooms: Chat[], read: (key: string) => Promise<unknown>): Promise<Chat[]> {
+    return Promise.all(rooms.map(async room => {
+        if (!isArchivedRoom(room)) return room
+        try {
+            const data = await read(room.message[0].data.slice(coldHeader.length))
+            const messages = Array.isArray(data) ? data : (data as { message?: Message[] } | null)?.message
+            if (Array.isArray(messages) && messages.every(m => m && typeof m.data === 'string')) {
+                return { ...room, message: messages }
+            }
+        } catch { /* Keep the pointer for a later retry and show the room as unavailable. */ }
+        return room
+    }))
+}
+
+export function searchRooms(rooms: Chat[], query: string, currentEnd = rooms[0].message.length, limit = 20): SceneHit[] {
+    const hits = rooms.flatMap((room, i) => searchScenes(room.message, query, i ? room.message.length : currentEnd, limit)
+        .map(hit => ({ ...hit, roomId: room.id, roomName: room.name })))
+    return hits.sort((a, b) => b.score - a.score).slice(0, limit)
+}
+
+type SourceLocation = { id: string, roomId?: string, turn?: number, excerpt: string }
+export function locateSource(rooms: Chat[], source: SourceLocation) {
+    const room = source.roomId ? rooms.find(r => r.id === source.roomId) : rooms[0]
+    if (!room) return
+    const i = source.id ? room.message.findIndex(m => m.chatId === source.id) : (source.turn ?? 0) - 1
+    if (i < 0 || i >= room.message.length || !available(room.message, i, room.message.findLastIndex(m => m.disabled === 'allBefore'))) return
+    const body = sceneBody(room.message[i].data)
+    if (!source.id && !body.includes(source.excerpt)) return
+    return { room, i, body }
+}
+
+export function selectedScene(chat: Chat, rooms = [chat]): SceneSource | undefined {
+    const pin = chat.sceneRecallPin
+    if (!pin) return
+    const location = locateSource(rooms, pin)
+    if (!location) return
+    const { room, i, body } = location
+    const excerpt = pin.excerpt && body.includes(pin.excerpt) ? pin.excerpt : body.slice(0, 420).trim()
+    if (excerpt) return { id: pin.id, ...(pin.roomId ? { roomId:room.id, roomName:room.name } : {}), turn:i + 1, excerpt }
+}
+
+export function recallForRequest(chat: Chat, prompt: OpenAIChat[], rooms = [chat]): SceneSource[] {
+    const pin = selectedScene(chat, rooms)
     if (pin) return [pin]
     if (chat.sceneRecallAuto === false) return []
     const lastUser = chat.message.findLastIndex(m => m.role === 'user' && !m.disabled && !m.isComment)
-    if (lastUser < 3 || chat.message.slice(lastUser).some(m => m.disabled === 'allBefore')) return []
+    if (lastUser < 0 || chat.message.slice(lastUser).some(m => m.disabled === 'allBefore')) return []
     const query = sceneBody(chat.message[lastUser].data).slice(-800)
     const present = new Set(prompt.map(m => m.memo))
-    const sources = searchScenes(chat.message, query, lastUser - 2, chat.message.length)
-        .filter(hit => hit.id && (hit.matches >= 2 || hit.score >= 3)
-            && !present.has(hit.id) && !prompt.some(m => m.content.includes(hit.excerpt)))
-    return sources.slice(0, 2).map(({ id, turn, excerpt }) => ({ id, turn, excerpt }))
+    const seen = new Set<string>()
+    const sources: SceneSource[] = []
+    for (const hit of searchRooms(rooms, query, Math.max(0, lastUser - 2), Infinity)) {
+        if (hit.matches < 2 && hit.score < 3) continue
+        if (hit.roomId === chat.id && hit.id && present.has(hit.id)) continue
+        if (seen.has(hit.excerpt) || prompt.some(m => m.content.includes(hit.excerpt))) continue
+        const { id, turn, excerpt, roomId, roomName } = hit
+        sources.push({ id, turn, excerpt, roomId, roomName })
+        seen.add(excerpt)
+        if (sources.length === 2) break
+    }
+    return sources
 }
 
 export function scenePrompt(sources: SceneSource[]): OpenAIChat {
     return {
         role: 'user',
         content: 'Earlier scene excerpts from this same story, provided as historical context. Keep subsequent developments in effect.\n'
-            + JSON.stringify(sources.map(({ turn, excerpt }) => ({ turn, excerpt }))),
+            + JSON.stringify(sources.map(({ roomName, turn, excerpt }) => ({ room: roomName, turn, excerpt }))),
     }
 }
