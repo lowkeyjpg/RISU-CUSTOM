@@ -48,15 +48,23 @@ function available(messages: Message[], index: number, cutoff: number) {
 }
 
 // Work on overlapping passages so a long turn can be found by a line near its end.
-export function searchScenes(messages: Message[], query: string, end = messages.length, limit = 20): SceneHit[] {
+export function searchScenes(messages: Message[], query: string, end = messages.length, limit = 20, literal = ''): SceneHit[] {
     const terms = queryTerms(query)
-    if (!terms.length) return []
+    if (!terms.length && !literal) return []
     const endIndex = Math.min(end, messages.length)
     const cutoff = messages.findLastIndex(m => m.disabled === 'allBefore')
     const hits: SceneHit[] = []
     for (let i = cutoff + 1; i < endIndex; i++) {
         if (!available(messages, i, cutoff)) continue
         const body = sceneBody(messages[i].data)
+        // Direct matches take precedence when a reader searches for a line, even for a single character.
+        const pos = literal ? body.toLowerCase().indexOf(literal) : -1
+        if (pos >= 0) {
+            const start = Math.max(0, pos - 100)
+            hits.push({ id: messages[i].chatId ?? '', turn: i + 1, role: messages[i].role, score: Number.MAX_SAFE_INTEGER,
+                matches: 1, excerpt: body.slice(start, Math.max(start + 420, pos + literal.length)) })
+            continue
+        }
         let best: SceneHit | undefined
         for (let start = 0; start < body.length; start += 320) {
             const excerpt = body.slice(start, start + 420).trim()
@@ -112,8 +120,8 @@ export async function readSceneRooms(rooms: Chat[], read: (key: string) => Promi
     }))
 }
 
-export function searchRooms(rooms: Chat[], query: string, currentEnd = rooms[0].message.length, limit = 20): SceneHit[] {
-    const hits = rooms.flatMap((room, i) => searchScenes(room.message, query, i ? room.message.length : currentEnd, limit)
+export function searchRooms(rooms: Chat[], query: string, currentEnd = rooms[0].message.length, limit = 20, literal = ''): SceneHit[] {
+    const hits = rooms.flatMap((room, i) => searchScenes(room.message, query, i ? room.message.length : currentEnd, limit, literal)
         .map(hit => ({ ...hit, roomId: room.id, roomName: room.name })))
     return hits.sort((a, b) => b.score - a.score).slice(0, limit)
 }
@@ -122,7 +130,9 @@ type SourceLocation = { id: string, roomId?: string, turn?: number, excerpt: str
 export function locateSource(rooms: Chat[], source: SourceLocation) {
     const room = source.roomId ? rooms.find(r => r.id === source.roomId) : rooms[0]
     if (!room) return
-    const i = source.id ? room.message.findIndex(m => m.chatId === source.id) : (source.turn ?? 0) - 1
+    const turnIndex = (source.turn ?? 0) - 1
+    const i = !source.id || room.message[turnIndex]?.chatId === source.id
+        ? turnIndex : room.message.findIndex(m => m.chatId === source.id)
     if (i < 0 || i >= room.message.length || !available(room.message, i, room.message.findLastIndex(m => m.disabled === 'allBefore'))) return
     const body = sceneBody(room.message[i].data)
     if (!source.id && !body.includes(source.excerpt)) return
