@@ -65,6 +65,8 @@ interface fetchLog {
 
 let fetchLog: fetchLog[] = []
 
+import { isPocket, pocketWriter, savePocketBlob } from "./pocket";
+
 export async function downloadFile(name: string, dat: Uint8Array | ArrayBuffer | string) {
     if (typeof (dat) === 'string') {
         dat = Buffer.from(dat, 'utf-8')
@@ -85,6 +87,7 @@ export async function downloadFile(name: string, dat: Uint8Array | ArrayBuffer |
     }
     else {
         const blob = new Blob([data], { type: 'application/octet-stream' })
+        if (isPocket) return savePocketBlob(blob, name)
         const url = URL.createObjectURL(blob)
 
         downloadURL(url, name)
@@ -1266,6 +1269,11 @@ export class LocalWriter {
                 return false
             }
             this.writer = new TauriWriter(filePath)
+            return true
+        }
+        if (isPocket) {
+            const filename = name === 'Binary' ? 'RISU-backup-' + Date.now() : name
+            this.writer = pocketWriter(filename + '.' + ext[0]).getWriter()
             return true
         }
         const writableStream = streamSaver.createWriteStream(name + '.' + ext[0])

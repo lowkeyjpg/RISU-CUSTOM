@@ -121,7 +121,7 @@ export async function SaveLocalBackup(){
             }
             alertWait(message)
 
-            if(!key || !key.endsWith('.png')){
+            if(!key || !(key.endsWith('.png') || (isPocket && key.startsWith('assets/')))){
                 continue
             }
             let data: Uint8Array | undefined;
@@ -404,8 +404,13 @@ export async function SavePartialLocalBackup(){
     }
 }
 
+import { isPocket, pocketCommand, restoringPocket } from "../pocket"
+
+let stageFileSelected = false
+
 export function LoadLocalBackup(){
     try {
+        if (isPocket && (!restoringPocket || stageFileSelected)) { pocketCommand('stage'); return }
         const input = document.createElement('input');
         const encryptionMeta:{
             type: 'none' | 'account';
@@ -415,14 +420,18 @@ export function LoadLocalBackup(){
         }
         input.type = 'file';
         input.accept = '.bin';
-        input.onchange = async () => {
+        const restoreFile = async () => {
             if (!input.files || input.files.length === 0) {
                 input.remove();
                 return;
             }
             const file = input.files[0];
+            if (restoringPocket) stageFileSelected = true;
             input.remove();
 
+            if (/^\s*\{/.test(await file.slice(0, 64).text())) {
+                throw new Error('JSON 파일입니다. 개별 채팅은 해당 캐릭터의 채팅 목록 → 가져오기에서 열어 주세요.')
+            }
             const reader = file.stream().getReader();
             const CHUNK_SIZE = 1024 * 1024; // 1MB chunk size
             let bytesRead = 0;
@@ -452,6 +461,7 @@ export function LoadLocalBackup(){
                 while (offset + 4 <= remainingBuffer.length) {
                     const nameLength = new Uint32Array(remainingBuffer.slice(offset, offset + 4).buffer)[0];
 
+                    if (isPocket && (!nameLength || nameLength > 4096)) throw new Error('올바른 리수 전체 백업이 아닙니다.')
                     if (offset + 4 + nameLength > remainingBuffer.length) {
                         break;
                     }
@@ -484,6 +494,7 @@ export function LoadLocalBackup(){
                     }
 
                     else if (name === 'database.risudat') {
+                        if (isPocket && pendingDatabase) throw new Error('백업에 데이터베이스가 중복되어 있습니다.')
                         pendingDatabase = new Uint8Array(data);
                     }
                     
@@ -529,7 +540,7 @@ export function LoadLocalBackup(){
                 remainingBuffer = remainingBuffer.slice(offset);
             }
 
-            if(!pendingDatabase){
+            if(remainingBuffer.length || !pendingDatabase){
                 alertError('Failed, Is file corrupted?')
                 return
             }
@@ -547,6 +558,7 @@ export function LoadLocalBackup(){
                 }
             }
             const { database: dbData, kv: kvData } = await decodeRisuSave(db);
+            if (isPocket && !Array.isArray(dbData?.characters)) throw new Error('캐릭터 목록이 없는 백업입니다.')
             const restorePendingPluginItem = async (key: string) => {
                 if(!pendingPluginColdStorage.has(key)){
                     return
@@ -609,6 +621,11 @@ export function LoadLocalBackup(){
                 });
             } else {
                 await forageStorage.setItem('database/database.bin', db);
+                if (restoringPocket) {
+                    localStorage.setItem('dosync', 'avoid')
+                    pocketCommand('commitStage')
+                    return
+                }
                 location.search = '';
                 alertStore.set({
                     type: "wait",
@@ -619,6 +636,7 @@ export function LoadLocalBackup(){
             alertNormal('Success');
         };
 
+        input.onchange = () => { void restoreFile().catch(error => alertError(error instanceof Error ? error : String(error))) }
         input.click();
     } catch (error) {
         console.error(error);

@@ -49,7 +49,8 @@ const domSelect = true
 export async function selectSingleFile(ext:string[]){
     if(domSelect){
         const v = await selectFileByDom(ext, 'single')
-        const file = v[0]
+        const file = v?.[0]
+        if (!file) return null
         return {name: file.name,data:await readFileAsUint8Array(file)}
     }
 
@@ -179,6 +180,7 @@ export function selectFileByDom(allowedExtensions:string[], multiple:'multiple'|
         }
 
     
+        fileInput.addEventListener('cancel', () => { fileInput.remove(); resolve([]) }, {once:true});
         fileInput.addEventListener('change', (event) => {
             if (fileInput.files.length === 0) {
                 resolve([]);

@@ -43,6 +43,7 @@ import {
     setUsingSw,
     checkCharOrder
 } from "./globalApi.svelte";
+import { isPocket } from "./pocket";
 import { isTauri } from "./platform";
 import { registerModelDynamic } from "./model/modellist";
 import { convertFileSrc } from "@tauri-apps/api/core";
@@ -186,7 +187,7 @@ export async function loadData() {
                     return
                 }
                 LoadingStatusState.text = "Checking Service Worker..."
-                if (navigator.serviceWorker) {
+                if (!isPocket && navigator.serviceWorker) {
                     setUsingSw(true)
                     await registerSw()
                 }

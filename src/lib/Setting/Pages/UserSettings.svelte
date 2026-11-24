@@ -15,6 +15,7 @@
     import { exportAsDataset } from "src/ts/storage/exportAsDataset";
     import { loginToSionyw, testSionywLogin } from "src/ts/sionyw";
     import { cleanColdStorage } from "src/ts/process/coldstorage.svelte";
+    import { isPocket, pocketCommand } from 'src/ts/pocket'
     let openIframe = $state(false)
     let openIframeURL = $state('')
     let popup:Window = null
@@ -64,12 +65,17 @@
 
 <Button
     onclick={async () => {
+        if (isPocket) { LoadLocalBackup(); return }
         if((await alertConfirm(language.backupLoadConfirm)) && (await alertConfirm(language.backupLoadConfirm2))){
             LoadLocalBackup()
         }
     }} className="mt-2">
     {language.loadBackupLocal}
 </Button>
+
+{#if isPocket}
+    <Button className="mt-2" onclick={() => pocketCommand('spaces')}>저장 공간 전환</Button>
+{/if}
 
 {#if !forageStorage.isAccount}
     <Button

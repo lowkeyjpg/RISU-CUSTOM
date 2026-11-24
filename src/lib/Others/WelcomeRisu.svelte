@@ -14,6 +14,8 @@
     import Airisu from '../../etc/Airisu.webp'
     import WelcomeBackground from './WelcomeBackground.svelte'
 
+    import { isPocket, pocketCommand } from '../../ts/pocket'
+
     let step = $state(0)
     let history: number[] = $state([])
     let provider = $state('')
@@ -336,6 +338,9 @@
                     </div>
 
                     <div class="mt-7 flex flex-col gap-3">
+                        {#if isPocket && step <= 1}
+                            <button class="rounded-2xl bg-bgcolor px-4 py-3 font-medium" onclick={() => pocketCommand('stage')}>기존 리수 전체 백업 불러오기</button>
+                        {/if}
                         {#if step === 0}
                             <div class="grid grid-cols-2 gap-2">
                                 {#each languages as lang}

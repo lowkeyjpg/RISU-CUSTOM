@@ -369,7 +369,7 @@ export async function exportChat(page:number){
 }
 
 export async function importChat(){
-    const dat =await selectSingleFile(['json','jsonl','txt','html'])
+    const dat =await selectSingleFile(['json','jsonl','txt','html','bin'])
     if(!dat){
         return
     }
@@ -417,7 +417,11 @@ export async function importChat(){
             changeChatTo(0)
             alertNormal(language.successImport)
         }
-        else if(dat.name.endsWith('json')){
+        else if(/\.(json|bin)$/i.test(dat.name)){
+            if (/\.bin$/i.test(dat.name) && !/^\s*\{/.test(new TextDecoder().decode(dat.data.slice(0,64)))) {
+                alertError('전체 백업 파일은 설정 → 계정 및 파일 → 로컬 백업 불러오기에서 열어 주세요.')
+                return
+            }
             const json = JSON.parse(Buffer.from(dat.data).toString('utf-8'))
             if((json.type === 'risuAllChats' || json.type === 'risuChat') && json.ver === 2){
                 const folders = json.folders || []
