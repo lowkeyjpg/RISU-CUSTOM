@@ -1,35 +1,20 @@
 {
-    "name": "Risuai",
+    "name": "RISU CUSTOM DEV",
     "icons": [
         {
-            "src": "logo_512.png",
-            "type": "image/png",
-            "sizes": "512x512"
-        },
-        {
-            "src": "logo_192.png",
+            "src": "/icon/custom-192.png",
             "type": "image/png",
             "sizes": "192x192"
         },
         {
-            "src": "logo_16.png",
+            "src": "/icon/custom-512.png",
             "type": "image/png",
-            "sizes": "16x16"
-        },
-        {
-            "src": "logo_32.png",
-            "type": "image/png",
-            "sizes": "32x32"
-        },
-        {
-            "src": "logo_256.png",
-            "type": "image/png",
-            "sizes": "256x256"
+            "sizes": "512x512"
         }
     ],
     "start_url": "/",
     "display": "standalone",
-    "theme_color": "#4682B4",
+    "theme_color": "#CCFF18",
     "share_target": {
         "action": "/receive-files/",
         "method": "POST",
@@ -38,15 +23,21 @@
             "files": [
                 {
                     "name": "character",
-                    "accept": [".charx"]
+                    "accept": [
+                        ".charx"
+                    ]
                 },
                 {
                     "name": "preset",
-                    "accept": [".risup"]
+                    "accept": [
+                        ".risup"
+                    ]
                 },
                 {
                     "name": "module",
-                    "accept": [".risum"]
+                    "accept": [
+                        ".risum"
+                    ]
                 }
             ]
         }
@@ -55,9 +46,13 @@
         {
             "action": "/",
             "accept": {
-                "application/octet-stream": [".charx", ".risup", ".risum"]
+                "application/octet-stream": [
+                    ".charx",
+                    ".risup",
+                    ".risum"
+                ]
             }
         }
-    ]
-      
+    ],
+    "short_name": "RISU CUSTOM"
 }
