@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'none'; base-uri 'none'; form-action 'none'">
+<title>백업 옮기기 · RISU CUSTOM</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#141616;color:#f9f8ef;font:16px/1.55 system-ui,sans-serif}main{width:min(100%,37rem);margin:5vh auto;padding:1.25rem}h1{font-size:clamp(2rem,8vw,3rem);margin:.25em 0;font-weight:800;letter-spacing:-.06em}
+p{margin:.4rem 0 1rem;color:#dedfd6}label{display:block;margin:1.35rem 0;font-weight:700}small{display:block;font-weight:400;font-size:.94rem;color:#c5c9c0}
+input{display:block;width:100%;color:inherit;border:1px solid #666c60;padding:.7rem;border-radius:.45rem;margin-top:.45rem}input::file-selector-button{padding:.4rem .7rem;border:none;margin-right:.6rem;border-radius:.25rem}
+button,a{font:inherit;font-weight:700;background:#c9fc65;color:#162006;border:0;border-radius:.45rem;padding:.75rem 1.1rem;cursor:pointer}button:disabled{opacity:.5}a{display:inline-block;text-decoration:none}a[hidden]{display:none}output{display:block;margin:1rem 0;white-space:pre-wrap}button:focus-visible,a:focus-visible,input:focus-visible{outline:3px solid #eefcad;outline-offset:3px}
+</style>
+</head>
+<body><main>
+<h1>백업 옮기기</h1>
+<p>리수포켓에서 열리는 소설을 RISU CUSTOM으로 옮깁니다. 두 파일은 이 기기에서만 읽습니다.</p>
+<label>기존 전체 백업 <small>복원할 때 HTTP 403이 뜬 .bin 파일</small><input id="full" type="file" accept=".bin,application/octet-stream"></label>
+<label>같은 리수포켓에서 새로 저장한 부분 백업 <small>설정 → 계정 &amp; 파일 → 부분 로컬 백업 저장 (캐릭터 에셋 제외)</small><input id="partial" type="file" accept=".bin,application/octet-stream"></label>
+<p>채팅·기억·설정은 부분 백업 시점으로 옮깁니다. 이미지 등 추가 파일은 전체 백업에 들어 있는 것까지 포함합니다.</p>
+<button id="prepare" disabled>복원용 파일 만들기</button>
+<output id="status" aria-live="polite"></output><a id="download" hidden>복원용 .bin 저장</a>
+</main><script>
+'use strict';
+const full = document.getElementById('full');
+const partial = document.getElementById('partial');
+const prepare = document.getElementById('prepare');
+const download = document.getElementById('download');
+const status = document.getElementById('status');
+const decoder = new TextDecoder('utf-8', {fatal:true});
+const dbName = 'database.risudat';
+const encryptionName = 'encryption.risudat';
+const archivedData = /^(?:coldstorage[/_])?[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}\.json$/i;
+let url;
+
+function fileReader(file, label) {
+    let buffer = new Uint8Array(), base = 0;
+    return async (start, size) => {
+        if (start < 0 || size < 0 || start + size > file.size) throw Error(label + ' 파일의 중간 또는 끝이 잘려 있습니다.');
+        if (start < base || start + size > base + buffer.length) {
+            base = start;
+            buffer = new Uint8Array(await file.slice(start, start + Math.max(8192, size)).arrayBuffer());
+        }
+        return buffer.subarray(start - base, start - base + size);
+    };
+}
+function uint32(bytes) {
+    return new DataView(bytes.buffer, bytes.byteOffset, 4).getUint32(0, true);
+}
+async function indexFile(file, label) {
+    const read = fileReader(file, label);
+    const records = new Map();
+    let cursor = 0;
+    while (cursor < file.size) {
+        const start = cursor;
+        const n = uint32(await read(cursor, 4));
+        if (!n || n > 4096) throw Error(label + ' 칸에는 리수 설정에서 저장한 로컬 백업을 선택해 주세요.');
+        const name = decoder.decode(await read(cursor + 4, n));
+        const length = uint32(await read(cursor + 4 + n, 4));
+        const payload = cursor + 8 + n;
+        cursor = payload + length;
+        if (cursor > file.size) throw Error(label + ' 백업의 데이터가 중간에 끊겼습니다.');
+        if (records.has(name)) throw Error(label + ' 백업에 같은 이름의 항목이 두 번 들어 있습니다.');
+        records.set(name, {start, payload, end:cursor});
+    }
+    if (!records.has(dbName)) throw Error(label + ' 백업에서 데이터베이스를 찾지 못했습니다.');
+    return records;
+}
+// Check the framing of current Risu exports without loading an entire novel into memory.
+async function checkDatabase(db) {
+    const read = fileReader(db, '부분 백업 데이터베이스');
+    const magic = await read(0, 11);
+    if (String.fromCharCode(...magic.slice(0, 9)) !== 'RISUSAVE\0') {
+        if (String.fromCharCode(...magic.slice(0, 10)) === '\0RISUSAVE\0' && [7,8,9].includes(magic[10])) return;
+        throw Error('부분 백업의 데이터 형식을 확인할 수 없습니다. 원본 리수포켓에서 새 부분 백업을 저장해 주세요.');
+    }
+    let cursor = 9, root = false;
+    while (cursor < db.size) {
+        const [kind, compression, nameLength] = await read(cursor, 3);
+        if (compression > 1) throw Error('부분 백업의 압축 형식을 확인할 수 없습니다.');
+        const name = decoder.decode(await read(cursor + 3, nameLength));
+        const length = uint32(await read(cursor + 3 + nameLength, 4));
+        cursor += 7 + nameLength + length;
+        if (cursor > db.size) throw Error('부분 백업의 데이터베이스가 중간에 끊겼습니다.');
+        if (kind === 1 && name === 'root') root = true;
+    }
+    if (!root) throw Error('부분 백업의 기본 데이터를 찾을 수 없습니다.');
+}
+function reset() {
+    if (url) URL.revokeObjectURL(url);
+    url = undefined;
+    download.hidden = true;
+    download.removeAttribute('href');
+    status.textContent = '';
+    prepare.disabled = !full.files.length || !partial.files.length;
+}
+full.onchange = partial.onchange = reset;
+prepare.onclick = async () => {
+    reset();
+    prepare.disabled = full.disabled = partial.disabled = true;
+    status.textContent = '두 백업을 확인하고 있습니다…';
+    try {
+        const a = full.files[0], b = partial.files[0];
+        const first = await indexFile(a, '전체'), second = await indexFile(b, '부분');
+        if (!first.has(encryptionName)) throw Error('첫 번째 칸에 암호화된 전체 백업을 선택해 주세요.');
+        if (second.has(encryptionName)) throw Error('두 번째 파일도 암호화된 전체 백업입니다. 같은 리수포켓에서 “부분 로컬 백업 저장”을 선택해 주세요.');
+        const db = second.get(dbName);
+        await checkDatabase(b.slice(db.payload, db.end));
+        const parts = [];
+        let copied = 0;
+        for (const [name, entry] of first) {
+            if (second.has(name) || name.endsWith('.risudat') || archivedData.test(name)) continue;
+            parts.push(a.slice(entry.start, entry.end));
+            copied++;
+        }
+        // The fresh export owns all database, settings and archived memory records.
+        parts.push(b);
+        const result = new Blob(parts, {type:'application/octet-stream'});
+        url = URL.createObjectURL(result);
+        download.href = url;
+        download.download = 'RISU-transfer-' + new Date().toISOString().replace(/[:.]/g,'-') + '.bin';
+        download.hidden = false;
+        status.textContent = '준비됐습니다. 전체 백업에서 추가한 파일 ' + copied + '개 · ' + (result.size/1048576).toFixed(1) + ' MB\n아래 파일을 저장한 뒤 CUSTOM의 ‘전체 백업 선택’에서 여세요.';
+    } catch (error) {
+        status.textContent = error.message || '파일을 읽지 못했습니다.';
+    } finally {
+        full.disabled = partial.disabled = false;
+        prepare.disabled = !full.files.length || !partial.files.length;
+    }
+};
+</script></body></html>
