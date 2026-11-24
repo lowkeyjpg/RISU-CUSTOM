@@ -1,7 +1,7 @@
 //@name risu_pocket_original_scenes
 //@display-name 🎞️ OFFSCRIPT · MEMORY
 //@api 3.0
-//@version 1.1.1
+//@version 1.1.2
 (async () => {
 const noise = new Set('그때 그거 전에 예전 예전에 지난 장면 뭐라고 어떻게 다시 관련 대해 했던 기억 그녀 그는 그리고 그냥 대체 이번 그가 함께 있었다 what when where which with were that have then about they from said'.split(' '));
 const families = [
@@ -32,7 +32,7 @@ function sceneBody(raw) {
 }
 function available(messages, index, cutoff) {
     const message = messages[index];
-    return index > cutoff && !message.disabled && !message.isComment && typeof message.data === 'string'
+    return index > cutoff && message && !message.disabled && !message.isComment && typeof message.data === 'string'
         && !message.data.startsWith('\uEF01COLDSTORAGE\uEF01');
 }
 // Work on overlapping passages so a long turn can be found by a line near its end.
@@ -93,22 +93,24 @@ function linkedRooms(chat, siblings) {
 }
 const coldHeader = '\uEF01COLDSTORAGE\uEF01';
 function isArchivedRoom(room) {
-    return room.message[0]?.data?.startsWith(coldHeader);
+    return typeof room.message?.[0]?.data === 'string' && room.message[0].data.startsWith(coldHeader);
 }
 function searchRooms(rooms, query, currentEnd = rooms[0].message.length, limit = 20, literal = '') {
     const hits = rooms.flatMap((room, i) => searchScenes(room.message, query, i ? room.message.length : currentEnd, limit, literal)
         .map(hit => ({ ...hit, roomId: room.id, roomName: room.name })));
     return hits.sort((a, b) => b.score - a.score).slice(0, limit);
 }
-function locateSource(rooms, source) {
+function locateSource(rooms, source, reading = false) {
     const room = source.roomId ? rooms.find(r => r.id === source.roomId) : rooms[0];
     if (!room)
         return;
     const turnIndex = (source.turn ?? 0) - 1;
     const i = !source.id || room.message[turnIndex]?.chatId === source.id
         ? turnIndex : room.message.findIndex(m => m.chatId === source.id);
-    if (i < 0 || i >= room.message.length || !available(room.message, i, room.message.findLastIndex(m => m.disabled === 'allBefore')))
-        return;
+    if (i < 0 || i >= room.message.length) return;
+    const m = room.message[i];
+    if (!m || typeof m.data !== 'string' || m.data.startsWith(coldHeader)) return;
+    if (!reading && !available(room.message, i, room.message.findLastIndex(m => m?.disabled === 'allBefore'))) return;
     const body = sceneBody(room.message[i].data);
     if (!source.id && !body.includes(source.excerpt))
         return;
@@ -169,25 +171,69 @@ const sent = new Map()
 const keyFor = (c, r) => JSON.stringify([c.chaId, r.id])
 const readPrefs = async id => JSON.parse(await api.pluginStorage.getItem(prefix + id) || '{}')
 
+// Older exports can lack a room id. Use only unambiguous existing identity for lookup;
+// never write a generated id into the story just to search it.
+function roomKeys(chats) {
+    const firstCounts=new Map(), nameCounts=new Map()
+    for(const room of chats){
+        if(!room || room.id)continue
+        const first=room.message?.[0]?.chatId
+        firstCounts.set(first,(firstCounts.get(first)||0)+1)
+        nameCounts.set(room.name,(nameCounts.get(room.name)||0)+1)
+    }
+    return chats.map(room=>{
+        if(!room || room.id)return room?.id
+        const first=room.message?.[0]?.chatId
+        if(first && firstCounts.get(first)===1)return 'legacy-turn:'+first
+        if(room.name && nameCounts.get(room.name)===1)return 'legacy-room:'+room.name
+        return undefined
+    })
+}
 async function story() {
     const index = await api.getCurrentCharacterIndex()
     if (index < 0) throw Error('먼저 채팅방을 열어 주세요.')
     const c = typeof index === 'number' ? await api.getCharacterFromIndex(index) : await api.getCharacter()
     const current = c?.chats?.[c.chatPage]
-    if (!current?.id) throw Error('방 식별자를 읽을 수 없습니다. 채팅방을 다시 열어 주세요.')
+    if (!current) throw Error('검색할 채팅방을 먼저 열어 주세요.')
+    const keys=roomKeys(c.chats)
+    if(!keys[c.chatPage])throw Error('같은 이름의 예전 방을 구분할 수 없습니다. 현재 방에 고유한 이름을 붙인 뒤 다시 열어 주세요.')
     const prefs = await readPrefs(c.chaId)
-    const rooms = c.chats.map(room => ({
-        ...room, sceneRecallParent:prefs[room.id]?.parent,
-        pins:prefs[room.id]?.pins ?? (prefs[room.id]?.pin ? [prefs[room.id].pin] : []),
-        attachLimit: Math.min(8,Math.max(1,Number(prefs[room.id]?.limit)||2)), sceneRecallAuto:prefs[room.id]?.auto !== false
-    }))
-    return { c, index, current:rooms[c.chatPage], rooms, chain:linkedRooms(rooms[c.chatPage], rooms) }
+    const rooms = c.chats.map((room,i) => {
+        const id=keys[i], settings=prefs[id] || {}
+        return {...room,id, sceneRecallParent:settings.parent ?? room?.sceneRecallParent,
+            pins:settings.pins ?? (settings.pin ? [settings.pin] : []),
+            attachLimit:Math.min(8,Math.max(1,Number(settings.limit)||2)), sceneRecallAuto:settings.auto!==false}
+    })
+    const active=rooms[c.chatPage]
+    const chain=linkedRooms(active,rooms)
+    return { c, index, current:active, rooms, chain }
+}
+
+// A manual lookup can start in any room in the linked story. The model still uses ancestry only.
+function linkedSearchRooms(story) {
+    const children=new Map(), byId=new Map(story.rooms.map(room=>[room.id,room]))
+    for(const room of story.rooms) {
+        if(!room.sceneRecallParent)continue
+        if(!children.has(room.sceneRecallParent))children.set(room.sceneRecallParent,[])
+        children.get(room.sceneRecallParent).push(room)
+    }
+    const pending=[story.chain.at(-1)], ordered=[], seen=new Set()
+    for(let n=0;n<pending.length;n++){
+        const room=pending[n]
+        if(!room || seen.has(room.id))continue
+        seen.add(room.id);ordered.push(room)
+        const parent=byId.get(room.sceneRecallParent)
+        if(parent)pending.push(parent)
+        for(const child of children.get(room.id)||[])pending.push(child)
+    }
+    return ordered
 }
 
 async function before(messages, mode) {
     if (mode !== 'model' || !Array.isArray(messages)) return messages
     try {
-        const {c, current, chain} = await story()
+        const activeStory = await story()
+        const {c, current, chain} = activeStory
         const k = keyFor(c,current)
         if (messages.some(m => typeof m.content === 'string' && m.content.startsWith('Earlier scene excerpts from this same story,'))) return messages
         const textMessages = messages.filter(m => typeof m.content === 'string')
@@ -202,8 +248,9 @@ async function before(messages, mode) {
             if (!excerpt || sources.some(prior => prior.excerpt === excerpt) || textMessages.some(m => m.content.includes(excerpt))) return
             sources.push({...source, excerpt})
         }
+        const pinRooms=current.pins.length?linkedSearchRooms(activeStory):chain
         for (const pin of current.pins) {
-            if (pin.enabled !== false) include(selectedScene({sceneRecallPin:pin},chain))
+            if (pin.enabled !== false) include(selectedScene({sceneRecallPin:pin},pinRooms))
             if (sources.length >= current.attachLimit) break
         }
         if (sources.length < current.attachLimit && current.sceneRecallAuto) {
@@ -315,7 +362,7 @@ document.body.innerHTML = `<header><div class="wrap bar"><span class="imprint">O
 <p id="notice" role="status" aria-live="polite"></p>
 <section id="search"><form id="form" role="search"><div class="query"><input id="query" type="search" aria-label="원문 검색어" placeholder="대사, 인물, 장소 검색" maxlength="300"><button class="primary">검색</button></div>
 <div class="filters"><label>검색 범위<select id="scope"></select></label><label>작성자<select id="role"><option value="">모두</option><option value="char">캐릭터</option><option value="user">내 입력</option></select></label><label>RP 날짜<button type="button" id="calendarOpen">🗓 전체 날짜</button></label></div></form>
-<div class="meta"><strong id="summary"></strong><select id="sort" aria-label="결과 순서"><option value="new">최근 대화부터</option><option value="old">처음 대화부터</option></select></div><div id="hits"></div>
+<div class="meta"><strong id="summary"></strong><select id="sort" aria-label="결과 순서"><option value="new">최근 대화부터</option><option value="old">처음 대화부터</option></select></div><small id="scopeInfo" aria-live="polite"></small><div id="hits"></div>
 <nav id="pager" class="bar" hidden><button id="prevPage">← 이전</button><span id="page"></span><button id="nextPage">다음 →</button></nav></section>
 <section id="pins" hidden><h2>📌 고정한 원문</h2><p class="sub" id="pinHelp"></p><div id="saved"></div></section>
 <section id="settings" hidden><h2>⚙️ MEMORY 설정</h2><div id="roomSettings"><p class="sub" id="roomName"></p>
@@ -466,6 +513,7 @@ button:disabled {opacity:.4;cursor:default}
 .bar,.meta,.calnav,.actions,.pinrow,.detailtools {display:flex;align-items:center;gap:8px}
 .bar,.meta,.calnav {justify-content:space-between}
 .meta {border-bottom:1px solid var(--ink);padding-bottom:5px}
+#scopeInfo {display:block;margin-block:5px;overflow-wrap:anywhere} #scopeInfo button {min-height:32px;margin-left:8px;font-size:13px}
 .meta select {border:0;background:transparent;font-size:14px}
 .card {padding:13px 0;border-bottom:1px solid var(--line)}
 .openrow {display:block;text-align:left;width:100%;border:0;padding:0;background:transparent}
@@ -543,17 +591,20 @@ function change(mutator) {
 const storedPins = p => p.pins ?? (p.pin?[p.pin]:[])
 function pinChange(fn) {return change(p=>({pin:null,pins:fn(storedPins(p).slice())}))}
 function pinSource(row) {
-    const loc=locateSource(state.chain,row)
+    const loc=locateSource(linkedSearchRooms(state),row,true)
     if(!loc)throw Error('연결된 방에서 이 장면을 열 수 없습니다.')
     return {id:loc.room.message[loc.i].chatId || '',turn:loc.i+1,roomId:loc.room.id,roomName:loc.room.name,
         excerpt:row.excerpt && loc.body.includes(row.excerpt) ? row.excerpt.slice(0,420) : loc.body.slice(0,420)}
 }
 async function togglePin(row) {
     const source=pinSource(row)
+    if(!state.current.pins.some(p=>sameSource(p,source)) && !locateSource(linkedSearchRooms(state),source))
+        throw Error('이 장면은 리수에서 모델 전송을 제외했습니다. 원문은 계속 읽을 수 있습니다.')
     await pinChange(pins=>pins.some(p=>sameSource(p,source))?pins.filter(p=>!sameSource(p,source)):[...pins,source])
 }
 function controls() {
     const {current,chain,rooms}=state
+    const searchRooms=linkedSearchRooms(state)
     setText('count',current.pins.length)
     setText('roomName',state.c.name+' · '+current.name)
     $('auto').checked=allowed && current.sceneRecallAuto
@@ -562,12 +613,12 @@ function controls() {
     $('parent').replaceChildren(new Option('연결하지 않음',''))
     for(const r of rooms) if(r.id && !linkedRooms(r,rooms).some(x=>x.id===current.id)) option($('parent'),r.id,r.name)
     $('parent').value=current.sceneRecallParent || ''
-    const cold=chain.filter(isArchivedRoom)
+    const cold=searchRooms.filter(isArchivedRoom)
     setText('chain',chain.map(r=>r.name).reverse().join(' → ')+(cold.length?' · 리수에서 먼저 열어야 하는 보관된 방: '+cold.map(r=>r.name).join(', '):''))
     const scope=$('scope').value
-    $('scope').replaceChildren(new Option('연결한 방 전체',''))
-    for(const r of chain)option($('scope'),r.id,r.name)
-    $('scope').value=chain.some(r=>r.id===scope)?scope:''
+    $('scope').replaceChildren(new Option('연결한 방 전체 ('+searchRooms.length+'개)',''))
+    for(const r of searchRooms)option($('scope'),r.id,r.name)
+    $('scope').value=searchRooms.some(r=>r.id===scope)?scope:''
     $('sent').replaceChildren()
     for(const row of sent.get(prefsKey(state)) || [])$('sent').append(card(row,row.excerpt))
     if(!$('sent').children.length)empty('sent','이번 실행에서 첨부한 원문이 없습니다.')
@@ -602,10 +653,11 @@ function renderPins() {
     setText('pinHelp','사용 중 '+pins.filter(p=>p.enabled!==false).length+'개 · 위에서부터 최대 '+attachLimit+'개 첨부')
     if(!pins.length)empty('saved','검색한 장면을 열고 ‘📌 원문 고정’을 누르면 여기에 모입니다.')
     pins.forEach((p,i)=>{
-        const loc=locateSource(state.chain,p)
-        const resolved=loc && selectedScene({sceneRecallPin:p},state.chain)
+        const loc=locateSource(linkedSearchRooms(state),p,true)
+        const resolved=loc && selectedScene({sceneRecallPin:p},linkedSearchRooms(state))
         const box=card(resolved || p,resolved?.excerpt || p.excerpt,'',Boolean(loc))
         if(!loc)box.append(node('small','원문을 열 수 없음 · 방 연결 또는 보관 상태를 확인해 주세요.'))
+        else if(!resolved)box.append(node('small','리수에서 전송 제외한 대화입니다. 검색과 열람만 가능합니다.'))
         const actions=node('div','','pinrow')
         const active=button(p.enabled===false?'○ 사용 안 함':'● 사용 중',()=>pinChange(list=>list.map(x=>sameSource(x,p)?{...x,enabled:x.enabled===false}:x)))
         active.setAttribute('aria-pressed',String(p.enabled!==false))
@@ -621,15 +673,14 @@ function renderPins() {
 function invalidate() { epoch++;indexJob=null;searchRun++ }
 function records() {
     if(indexJob)return indexJob
-    const version=epoch, rooms=[...state.chain].reverse()
+    const version=epoch, rooms=linkedSearchRooms(state)
     indexJob=(async()=>{
         const list=[]
         for(const room of rooms){
-            if(isArchivedRoom(room))continue
-            const cutoff=room.message.findLastIndex(m=>m.disabled==='allBefore')
+            if(!Array.isArray(room.message)||isArchivedRoom(room))continue
             const indexed=await core.index(room.message,()=>version!==epoch)
             for(const r of indexed) {
-                if(!available(room.message,r.i,cutoff))continue
+                if(room.message[r.i].isComment)continue
                 const m=room.message[r.i]
                 const rawBody=m.chatId?'':sceneBody(m.data)
                 list.push({...r,role:m.role,id:m.chatId||'',turn:r.i+1,roomId:room.id,roomName:room.name,
@@ -648,6 +699,7 @@ async function search() {
     if(!state)return
     const seq=++searchRun
     const q=$('query').value.trim().normalize('NFC')
+    setText('summary','대화 검색 중…')
     const list=await records()
     if(seq!==searchRun)return
     const filtered=scoped(list)
@@ -660,7 +712,21 @@ function renderPage() {
     page=Math.min(page,pages-1)
     setText('summary',(queryUsed||day?'검색 결과 ':'전체 대화 ')+n.toLocaleString()+'개')
     const box=$('hits');box.replaceChildren()
-    if(!n)empty('hits','일치하는 대화가 없습니다.')
+    const scope=$('scope').value
+    const searched=linkedSearchRooms(state).filter(r=>!scope||r.id===scope)
+    const missing=searched.filter(r=>!Array.isArray(r.message)||isArchivedRoom(r))
+    const readable=searched.filter(r=>!missing.includes(r))
+    const info=$('scopeInfo');info.replaceChildren()
+    info.append(document.createTextNode('검색한 방 · '+(readable.map(r=>r.name).join(' · ')||'없음')))
+    if(missing.length) info.append(node('div','본문 미로드 · '+missing.map(r=>r.name).join(' · ')+' — 리수에서 해당 방을 한 번 연 뒤 검색창을 다시 열어 주세요.'))
+    if(!scope && searched.length===1 && state.rooms.length>1)
+        info.append(button('이전 방 연결',()=>toTab('settings')))
+    if(!n) {
+        empty('hits',missing.length?'읽을 수 있는 방에서 일치하는 대화가 없습니다.':'일치하는 대화가 없습니다.')
+        if(day||$('role').value)$('hits').append(button('날짜·작성자 필터 해제',()=>{
+            day='';$('role').value='';setText('calendarOpen','🗓 전체 날짜');searchNow()
+        }))
+    }
     const start=page*pageSize
     for(let i=start;i<Math.min(n,start+pageSize);i++){
         const row=hits[$('sort').value==='new'?n-i-1:i]
@@ -668,7 +734,7 @@ function renderPage() {
         item.classList.add('hitrow')
         const pinned=state.current.pins.some(p=>sameSource(p,row))
         const pinButton=button(pinned?'📌':'＋',async()=>{
-            const loc=locateSource(state.chain,row)
+            const loc=locateSource(linkedSearchRooms(state),row,true)
             const pos=queryUsed && loc?loc.body.toLowerCase().indexOf(queryUsed.toLowerCase()):-1
             const start=Math.max(0,pos-90)
             await togglePin({...row,excerpt:loc?.body.slice(start,start+420)||row.excerpt})
@@ -693,7 +759,7 @@ function editMode(on) {
     if(on){$('draft').value=original;$('draft').focus()}
 }
 function openScene(row,fromList) {
-    const loc=locateSource(state.chain,row)
+    const loc=locateSource(linkedSearchRooms(state),row,true)
     if(!loc)throw Error('연결된 방에서 해당 원문을 찾을 수 없습니다.')
     if(fromList){returnTab=tab;returnY=window.scrollY}
     original=loc.room.message[loc.i].data
@@ -741,17 +807,20 @@ async function save() {
         if(ordinal<0)throw Error('캐릭터를 확인하지 못했습니다.')
         const c=await api.getCharacterFromIndex(ordinal)
         if(c?.chaId!==fresh.c.chaId)throw Error('캐릭터가 바뀌었습니다.')
-        const i=c.chats.findIndex(r=>r.id===opened.roomId)
-        if(i<0 || !fresh.chain.some(r=>r.id===opened.roomId))throw Error('방 연결이 바뀌었습니다.')
+        const i=roomKeys(c.chats).indexOf(opened.roomId)
+        if(i<0 || !linkedSearchRooms(fresh).some(r=>r.id===opened.roomId))throw Error('방 연결이 바뀌었습니다.')
         const room=await api.getChatFromIndex(ordinal,i)
-        const loc=room && locateSource([room],opened)
+        if(!room || (room.id && room.id!==opened.roomId) || (!room.id && (room.name!==c.chats[i].name || room.message?.[0]?.chatId!==c.chats[i].message?.[0]?.chatId)))throw Error('방이 바뀌었습니다. 다시 열어 주세요.')
+        const loc=locateSource([{...room,id:opened.roomId}],opened,true)
         if(!loc||room.isStreaming||room.message[loc.i].data!==original)throw Error('원문이 바뀌었거나 전개 중입니다. 다시 열어 주세요.')
-        const old=opened, id=room.message[loc.i].chatId || 'scene-'+Array.from(crypto.getRandomValues(new Uint32Array(4))).join('-')
-        room.message[loc.i]={...room.message[loc.i],chatId:id,data:value}
+        const old=opened
+        const preserveLegacyKey=!room.id && loc.i===0
+        const id=room.message[loc.i].chatId || (preserveLegacyKey?'':'scene-'+Array.from(crypto.getRandomValues(new Uint32Array(4))).join('-'))
+        room.message[loc.i]={...room.message[loc.i],...(id?{chatId:id}:{}),data:value}
         await api.setChatToIndex(ordinal,i,room)
         state=await checked();invalidate()
         const updated={...old,id,excerpt:sceneBody(value).slice(0,420)}
-        const result=locateSource(state.chain,updated)
+        const result=locateSource(linkedSearchRooms(state),updated,true)
         if(!result||result.room.message[result.i].data!==value)throw Error('저장 결과를 확인할 수 없습니다.')
         if(state.current.pins.some(p=>sameSource(p,old)))await pinChange(list=>list.map(p=>sameSource(p,old)?{...p,id:updated.id,turn:updated.turn,excerpt:updated.excerpt}:p))
         openScene(updated,false);await search();report('원문을 저장했습니다.')
@@ -845,7 +914,7 @@ async function open(initial) {
     $('scope').replaceChildren();$('saved').replaceChildren();$('hits').replaceChildren()
     setText('calendarOpen','🗓 전체 날짜');setText('count',0)
     show('roomSettings',false);pickTab(initial);report('')
-    try{state=await story()}catch(e){report('소설의 채팅방을 열어 주세요. 방마다 검색 범위와 고정 목록을 따로 관리합니다.');return}
+    try{state=await story()}catch(e){report(e.message || '채팅방을 불러오지 못했습니다.');return}
     show('roomSettings',true);controls();await toTab(initial)
 }
 await api.registerSetting('OFFSCRIPT · MEMORY 설정',guard(()=>open('settings')),'🎞️','html','pocket-original-settings')
