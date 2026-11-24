@@ -34,6 +34,8 @@ import { getModuleAssets, getModuleToggles } from "./modules";
 import { readImage } from "../globalApi.svelte";
 import { pluginV2 } from "../plugins/plugins.svelte";
 
+import { recallForRequest, scenePrompt, selectedScene, type SceneSource } from "./memory/sceneRecall";
+
 export interface OpenAIChat{
     role: 'system'|'user'|'assistant'|'function'
     content: string
@@ -1522,6 +1524,53 @@ export async function sendChat(chatProcessIndex = -1,arg:{
         })
     }
 
+    // Resolve against the final template/Hypa history to avoid repeating a retained scene.
+    const sceneSources: SceneSource[] = []
+    const candidates = recallForRequest(currentChat, formated)
+    if (candidates.length) {
+        const room = Math.max(0, maxContextTokens - DBState.db.maxResponse)
+        const cap = Math.min(512, Math.floor(room / 6))
+        let quoteTokens = 0
+        for (const candidate of candidates) {
+            let excerpt = candidate.excerpt
+            while (excerpt.length) {
+                const source = { ...candidate, excerpt }
+                const tokens = await tokenizer.tokenizeChat(scenePrompt([...sceneSources, source]))
+                if (tokens <= cap) {
+                    sceneSources.push(source)
+                    quoteTokens = tokens
+                    break
+                }
+                if (excerpt.length <= 64) break
+                excerpt = excerpt.slice(0, Math.max(64, Math.floor(excerpt.length * 0.7))).trimEnd()
+            }
+        }
+        const recent = new Set(ms.slice(-4).map(m => m.chatId))
+        const remove = new Set<OpenAIChat>()
+        let freed = 0
+        for (const message of formated) {
+            if (inputTokens + quoteTokens - freed <= room) break
+            if (message.removable && message.memo && !recent.has(message.memo)) {
+                remove.add(message)
+                freed += await tokenizer.tokenizeChat(message)
+            }
+        }
+        if (sceneSources.length && inputTokens + quoteTokens - freed <= room) {
+            formated = formated.filter(message => !remove.has(message))
+            const lastUser = formated.findLastIndex(message => message.role === 'user')
+            const insertAt = lastUser >= 0 ? lastUser : Math.max(0, formated.length - 1)
+            formated.splice(insertAt, 0, scenePrompt(sceneSources))
+            inputTokens += quoteTokens - freed
+            if (promptInfo.promptText) promptInfo.promptText = safeStructuredClone(formated)
+        } else {
+            sceneSources.length = 0
+            if (selectedScene(currentChat)) {
+                throwError('고정한 장면을 넣을 문맥 공간이 부족합니다. 장면 기억에서 고정을 해제하거나 문맥 길이를 늘려 주세요.')
+                return false
+            }
+        }
+    }
+
     //estimate tokens
     let outputTokens = DBState.db.maxResponse
     if(inputTokens + outputTokens > maxContextTokens){
@@ -1533,6 +1582,7 @@ export async function sendChat(chatProcessIndex = -1,arg:{
     generationInfo = {
         model: generationModel,
         generationId: generationId,
+        ...(sceneSources.length ? { sceneSources } : {}),
         inputTokens: inputTokens,
         outputTokens: outputTokens,
         maxContext: maxContextTokens,

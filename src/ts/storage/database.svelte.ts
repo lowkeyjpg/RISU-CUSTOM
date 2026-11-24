@@ -1829,6 +1829,8 @@ interface ComfyConfig{
 export type FormatingOrderItem = 'main'|'jailbreak'|'chats'|'lorebook'|'globalNote'|'authorNote'|'lastChat'|'description'|'postEverything'|'personaPrompt'
 
 export interface Chat{
+    sceneRecallAuto?: boolean
+    sceneRecallPin?: { id: string, excerpt: string }
     message: Message[]
     note:string
     name:string
@@ -1905,6 +1907,7 @@ export interface Message{
 }
 
 export interface MessageGenerationInfo{
+    sceneSources?: { id: string, turn: number, excerpt: string }[]
     model?: string
     generationId?: string
     inputTokens?: number

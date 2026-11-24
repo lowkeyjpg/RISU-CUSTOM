@@ -1,5 +1,6 @@
 <script lang="ts">
 
+    import SceneRecall from './SceneRecall.svelte';
     import Suggestion from './Suggestion.svelte';
     import { CameraIcon, DatabaseIcon, DicesIcon, GlobeIcon, ImagePlusIcon, LanguagesIcon, Laugh, MenuIcon, MicOffIcon, PackageIcon, Plus, RefreshCcwIcon, ReplyIcon, Send, StepForwardIcon, XIcon, BrainIcon, ArrowDown, SparkleIcon, CompassIcon, ChevronRightIcon } from "@lucide/svelte";
     import { selectedCharID, PlaygroundStore, createSimpleCharacter, hypaV3ModalOpen, ScrollToMessageStore, additionalChatMenu, additionalFloatingActionButtons, easyPanelStore, chatPanelStore, onboardingModalStore } from "../../ts/stores.svelte";
@@ -44,6 +45,7 @@
 
     let messageInput:string = $state('')
     let messageInputTranslate:string = $state('')
+    let recallOpen = $state(false)
     let openMenu = $state(false)
     let loadPages = $state(getInitialChatLoadPages(DBState.db))
     let autoMode = $state(false)
@@ -680,7 +682,7 @@
                             openMenu = !openMenu
                             e.stopPropagation()
                         }}
-                            class="peer-focus:border-textcolor mr-2 flex border-y border-r border-darkborderc justify-center items-center text-textcolor p-3 rounded-r-md hover:bg-blue-500 hover:text-white transition-colors"
+                            aria-label="채팅 메뉴" class="peer-focus:border-textcolor mr-2 flex border-y border-r border-darkborderc justify-center items-center text-textcolor p-3 rounded-r-md hover:bg-blue-500 hover:text-white transition-colors"
                             style:height={inputHeight}
                     >
                         <MenuIcon />
@@ -693,7 +695,7 @@
                         })
                         DBState.db.characters[$selectedCharID].chats[DBState.db.characters[$selectedCharID].chatPage] = DBState.db.characters[$selectedCharID].chats[DBState.db.characters[$selectedCharID].chatPage]
                     }}
-                         class="peer-focus:border-textcolor mr-2 flex border-y border-r border-darkborderc justify-center items-center text-textcolor p-3 rounded-r-md hover:bg-blue-500 hover:text-white transition-colors"
+                         aria-label="채팅 메뉴" class="peer-focus:border-textcolor mr-2 flex border-y border-r border-darkborderc justify-center items-center text-textcolor p-3 rounded-r-md hover:bg-blue-500 hover:text-white transition-colors"
                          style:height={inputHeight}
                     >
                         <Plus />
@@ -945,6 +947,10 @@
                     </div>
 
 
+                    <button class="flex items-center gap-2 hover:text-green-500" onclick={() => { openMenu = false; recallOpen = true }}>
+                        <BrainIcon />장면 기억
+                    </button>
+
                     {#if DBState.db.showMenuChatList}
                         <div class="flex items-center cursor-pointer hover:text-green-500 transition-colors" onclick={() => {
                             openChatList = true
@@ -1127,3 +1133,9 @@
         100% { transform: rotate(360deg); }
     }
 </style>
+
+{#if recallOpen && currentCharacter?.chats[currentCharacter.chatPage]}
+    {#key currentCharacter.chats[currentCharacter.chatPage].id}
+        <SceneRecall chat={currentCharacter.chats[currentCharacter.chatPage]} close={() => recallOpen = false} jump={scrollToMessage} />
+    {/key}
+{/if}
