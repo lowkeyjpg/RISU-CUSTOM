@@ -479,17 +479,14 @@ export function LoadLocalBackup(){
                     const data = remainingBuffer.slice(offset + 4 + nameLength + 4, offset + 4 + nameLength + 4 + dataLength);
 
                     if( name === 'encryption.risudat') {
-                        try {
-                            const meta = JSON.parse(new TextDecoder().decode(data)) as typeof encryptionMeta
-                            if (meta.type === 'account' && meta.time) {
-                                encryptionMeta.type = 'account'
-                                encryptionMeta.time = meta.time
-                            } else {
-                                alertError('Invalid encryption metadata, will attempt to load database backup without decryption.')
-                            }
-                        } catch (e) {
-                            console.error('Failed to parse encryption metadata:', e)
-                            alertError('Failed to parse encryption metadata, will attempt to load database backup without decryption.')
+                        let meta
+                        try { meta = JSON.parse(new TextDecoder().decode(data)) }
+                        catch { throw new Error('백업의 암호화 정보(encryption.risudat)를 읽지 못했습니다.') }
+                        if (meta?.type === 'account' && Number.isSafeInteger(Number(meta.time)) && Number(meta.time) > 0) {
+                            encryptionMeta.type = 'account'
+                            encryptionMeta.time = Number(meta.time)
+                        } else if (meta?.type !== 'none') {
+                            throw new Error('지원하지 않는 백업 암호화 정보입니다.')
                         }
                     }
 
@@ -547,17 +544,36 @@ export function LoadLocalBackup(){
 
             let db = pendingDatabase;
             if(encryptionMeta.type === 'account' && encryptionMeta.time){
+                const time = encryptionMeta.time
+                let response: Response
                 try {
-                    const key = (await (await fetch(`https://sv.risuai.xyz/cryptokey?key=${encryptionMeta.time}`)).json()).key
-                    const decrypted = await decryptBuffer(db, key)
-                    db = new Uint8Array(decrypted)
+                    response = await fetch(`https://sv.risuai.xyz/cryptokey?key=${time}`, {cache:'no-store', signal:AbortSignal.timeout?.(15000)})
+                } catch {
+                    if (!restoringPocket) throw new Error('복호화 단계에서 리수 키 서버에 연결하지 못했습니다. 원본 백업을 보관해 주세요.')
+                    try {
+                        response = await fetch(`/pocket-backup-key?time=${time}`, {
+                            headers:{'X-Pocket-Restore':'1'}, cache:'no-store', signal:AbortSignal.timeout?.(30000)
+                        })
+                    } catch { throw new Error('복호화 단계에서 앱이 리수 키 서버에 연결하지 못했습니다.') }
                 }
-                catch (e) {
-                    console.error('Failed to decrypt database backup:', e)
-                    alertError('Failed to decrypt database backup, will attempt to load it without decryption.')
+                if (!response.ok) throw new Error(`리수 키 서버에서 백업 키를 받지 못했습니다 (HTTP ${response.status}).`)
+                const key = (await response.json().catch(() => null))?.key
+                if (typeof key !== 'string' || !key) throw new Error('리수 키 서버의 응답에 유효한 백업 키가 없습니다.')
+                try {
+                    db = new Uint8Array(await decryptBuffer(db, key))
+                } catch {
+                    throw new Error('백업 복호화에 실패했습니다. 받은 키로 이 파일의 무결성을 확인할 수 없습니다.')
                 }
             }
-            const { database: dbData, kv: kvData } = await decodeRisuSave(db);
+            let decoded: Awaited<ReturnType<typeof decodeRisuSave>>
+            try {
+                decoded = await decodeRisuSave(db)
+            } catch {
+                throw new Error(encryptionMeta.type === 'account'
+                    ? '복호화는 완료됐지만 백업 안의 데이터베이스 형식 또는 압축 데이터를 읽지 못했습니다.'
+                    : '백업 안의 데이터베이스 형식 또는 압축 데이터를 읽지 못했습니다. 암호화 정보는 없는 파일입니다.')
+            }
+            const { database: dbData, kv: kvData } = decoded
             if (isPocket && !Array.isArray(dbData?.characters)) throw new Error('캐릭터 목록이 없는 백업입니다.')
             const restorePendingPluginItem = async (key: string) => {
                 if(!pendingPluginColdStorage.has(key)){

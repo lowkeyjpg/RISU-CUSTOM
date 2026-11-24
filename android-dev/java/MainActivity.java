@@ -20,7 +20,7 @@ import java.util.*;
 public final class MainActivity extends Activity {
     private static final String DOMAIN = ".risu-custom.invalid";
     private SharedPreferences prefs;
-    private String space, staging;
+    private volatile String space, staging;
     private WebView web;
     private ValueCallback<Uri[]> pendingPicker;
     private final Map<String, Download> downloads = new HashMap<>();
@@ -50,6 +50,7 @@ public final class MainActivity extends Activity {
                 Uri uri = request.getUrl();
                 if (!local(uri)) return null;
                 String path = uri.getPath();
+                if ("/pocket-backup-key".equals(path)) return backupKey(request);
                 if (path == null || path.equals("/")) path = "/index.html";
                 if (path.contains("..") || path.contains("\\")) return missing();
                 try {
@@ -97,6 +98,47 @@ public final class MainActivity extends Activity {
     private WebResourceResponse missing() {
         return new WebResourceResponse("text/plain", "utf-8", 404, "Not Found",
             Collections.emptyMap(), new ByteArrayInputStream(new byte[0]));
+    }
+    // Available only during restore at the active local origin. No URL or credentials are supplied by the page.
+    private WebResourceResponse backupKey(WebResourceRequest request) {
+        Uri uri = request.getUrl();
+        String stage = staging;
+        if (stage == null || !uri.getHost().equals(stage + DOMAIN) || request.isForMainFrame()
+                || !"GET".equals(request.getMethod())) return missing();
+        boolean restoreRequest = false;
+        for (Map.Entry<String,String> header : request.getRequestHeaders().entrySet()) {
+            if ("X-Pocket-Restore".equalsIgnoreCase(header.getKey()) && "1".equals(header.getValue())) restoreRequest = true;
+        }
+        if (!restoreRequest) return missing();
+        String time = uri.getQueryParameter("time");
+        if (time == null || !time.matches("[0-9]{1,16}")) return missing();
+        java.net.HttpURLConnection connection = null;
+        try {
+            connection = (java.net.HttpURLConnection) new java.net.URL("https://sv.risuai.xyz/cryptokey?key=" + time).openConnection();
+            connection.setInstanceFollowRedirects(false);
+            connection.setConnectTimeout(10000);
+            connection.setReadTimeout(10000);
+            connection.setUseCaches(false);
+            int status = connection.getResponseCode();
+            if (status != 200) return keyResponse(status >= 400 && status <= 599 ? status : 502, new byte[0]);
+            try (InputStream input = connection.getInputStream(); ByteArrayOutputStream body = new ByteArrayOutputStream()) {
+                byte[] chunk = new byte[1024];
+                int count;
+                while ((count = input.read(chunk)) != -1) {
+                    if (body.size() + count > 16384) return keyResponse(502, new byte[0]);
+                    body.write(chunk, 0, count);
+                }
+                return keyResponse(200, body.toByteArray());
+            }
+        } catch (IOException error) {
+            return keyResponse(503, new byte[0]);
+        } finally {
+            if (connection != null) connection.disconnect();
+        }
+    }
+    private WebResourceResponse keyResponse(int status, byte[] body) {
+        return new WebResourceResponse("application/json", "utf-8", status, status == 200 ? "OK" : "Key unavailable",
+            Collections.singletonMap("Cache-Control", "no-store"), new ByteArrayInputStream(body));
     }
     private String mime(String path) {
         if (path.endsWith(".js") || path.endsWith(".mjs")) return "application/javascript";
